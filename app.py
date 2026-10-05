@@ -83,6 +83,132 @@ def save_settings(data: dict):
     conn.commit()
     conn.close()
 
+def get_dishes_df(category=None):
+    conn = sqlite3.connect(DB_PATH)
+    if category and category != "Все":
+        df = pd.read_sql_query(
+            "SELECT id, name, category FROM dishes WHERE category = ? ORDER BY name",
+            conn,
+            params=(category,),
+        )
+    else:
+        df = pd.read_sql_query(
+            "SELECT id, name, category FROM dishes ORDER BY category, name",
+            conn,
+        )
+    conn.close()
+    return df
+
+
+def get_all_dishes_df():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT id, name, category FROM dishes ORDER BY name", conn)
+    conn.close()
+    return df
+
+
+def add_dish(name, category):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO dishes (name, category) VALUES (?, ?)", (name, category))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def update_dish_category(dish_id, category):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE dishes SET category = ? WHERE id = ?", (category, dish_id))
+    conn.commit()
+    conn.close()
+
+
+CATEGORY_ICONS = {
+    "Первое": "🍲",
+    "Второе": "🍛",
+    "Напиток": "🍵",
+    "Салат": "🥗",
+    "Выпечка": "🥐",
+    "Прочее": "🍽",
+}
+
+def delete_dish(dish_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM dish_ingredients WHERE dish_id = ?", (dish_id,))
+    cursor.execute("DELETE FROM dishes WHERE id = ?", (dish_id,))
+    conn.commit()
+    conn.close()
+
+
+def rename_dish(dish_id, new_name):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE dishes SET name = ? WHERE id = ?", (new_name, dish_id))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def get_dish_ingredients(dish_id):
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(
+        """
+        SELECT di.product_id, p.name AS product_name, p.unit,
+               di.grams_per_portion
+        FROM dish_ingredients di
+        JOIN products p ON p.id = di.product_id
+        WHERE di.dish_id = ?
+        ORDER BY p.name
+        """,
+        conn,
+        params=(dish_id,),
+    )
+    conn.close()
+    return df
+
+
+def add_dish_ingredient(dish_id, product_id, grams):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Проверим, нет ли уже такого продукта в блюде
+    cursor.execute(
+        "SELECT COUNT(*) FROM dish_ingredients WHERE dish_id = ? AND product_id = ?",
+        (dish_id, product_id),
+    )
+    exists = cursor.fetchone()[0]
+    if exists:
+        cursor.execute(
+            "UPDATE dish_ingredients SET grams_per_portion = ? WHERE dish_id = ? AND product_id = ?",
+            (grams, dish_id, product_id),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO dish_ingredients (dish_id, product_id, grams_per_portion) VALUES (?, ?, ?)",
+            (dish_id, product_id, grams),
+        )
+    conn.commit()
+    conn.close()
+
+
+def delete_dish_ingredient(dish_id, product_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM dish_ingredients WHERE dish_id = ? AND product_id = ?",
+        (dish_id, product_id),
+    )
+    conn.commit()
+    conn.close()
 
 # ==================== ГЕНЕРАЦИЯ PDF ====================
 class InvoicePDF(FPDF):
@@ -315,10 +441,189 @@ with tab_settings:
 
 # ==================== ЗАГЛУШКИ ====================
 with tab_dishes:
-    st.info("Здесь будет справочник блюд с технологическими картами.")
+    st.subheader("Справочник блюд")
+    st.caption("Выбери блюдо слева — справа увидишь состав. Всё в граммах на 1 порцию.")
+
+    col_list, col_detail = st.columns([1, 2])
+
+    # --- Левая колонка: список блюд с фильтром по категориям ---
+    with col_list:
+        st.markdown("**Категория**")
+        categories = ["Все", "Первое", "Второе", "Напиток", "Салат", "Выпечка", "Прочее"]
+        if "selected_category" not in st.session_state:
+            st.session_state.selected_category = "Все"
+
+        # Кнопки-фильтры в две строки
+        cat_cols = st.columns(2)
+        for i, cat in enumerate(categories):
+            with cat_cols[i % 2]:
+                icon = CATEGORY_ICONS.get(cat, "📋") if cat != "Все" else "📋"
+                is_sel = st.session_state.selected_category == cat
+                label = f"{icon} **{cat}**" if is_sel else f"{icon} {cat}"
+                if st.button(label, key=f"cat_{cat}", use_container_width=True):
+                    st.session_state.selected_category = cat
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("**Блюда**")
+
+        dishes_df = get_dishes_df(st.session_state.selected_category)
+
+        if len(dishes_df) == 0:
+            st.info("В этой категории пока нет блюд.")
+
+        for _, dish in dishes_df.iterrows():
+            dish_id = int(dish["id"])
+            dish_name = dish["name"]
+            dish_cat = dish.get("category", "Прочее")
+            dish_icon = CATEGORY_ICONS.get(dish_cat, "🍽")
+
+            is_selected = st.session_state.get("selected_dish_id") == dish_id
+            label = f"{dish_icon} **{dish_name}**" if is_selected else f"{dish_icon} {dish_name}"
+
+            if st.button(label, key=f"dish_{dish_id}", use_container_width=True):
+                st.session_state.selected_dish_id = dish_id
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("**Добавить блюдо**")
+        new_dish_name = st.text_input(
+            "Название",
+            key="new_dish_name",
+            label_visibility="collapsed",
+            placeholder="Название блюда",
+        )
+        new_dish_cat = st.selectbox(
+            "Категория",
+            ["Первое", "Второе", "Напиток", "Салат", "Выпечка", "Прочее"],
+            key="new_dish_cat",
+            label_visibility="collapsed",
+        )
+        if st.button("➕ Добавить блюдо", key="add_dish_btn", use_container_width=True):
+            if new_dish_name.strip():
+                ok = add_dish(new_dish_name.strip(), new_dish_cat)
+                if ok:
+                    st.success(f"Добавлено: {new_dish_name}")
+                    st.rerun()
+                else:
+                    st.warning("Такое блюдо уже есть")
+            else:
+                st.error("Введи название")
+
+    # --- Правая колонка: состав выбранного блюда ---
+    with col_detail:
+        if st.session_state.get("selected_dish_id") is None:
+            st.info("Слева выбери блюдо или добавь новое.")
+        else:
+            selected_id = st.session_state.selected_dish_id
+            all_dishes = get_all_dishes_df()
+            selected_row = all_dishes[all_dishes["id"] == selected_id]
+
+            if len(selected_row) == 0:
+                st.warning("Блюдо не найдено")
+                st.session_state.selected_dish_id = None
+            else:
+                selected_name = selected_row.iloc[0]["name"]
+                selected_cat = selected_row.iloc[0].get("category", "Прочее")
+                selected_icon = CATEGORY_ICONS.get(selected_cat, "🍽")
+
+                col_title, col_cat, col_rename, col_delete = st.columns([3, 2, 2, 2])
+                with col_title:
+                    st.markdown(f"### {selected_icon} {selected_name}")
+                with col_cat:
+                    new_cat = st.selectbox(
+                        "Категория",
+                        ["Первое", "Второе", "Напиток", "Салат", "Выпечка", "Прочее"],
+                        index=["Первое", "Второе", "Напиток", "Салат", "Выпечка", "Прочее"].index(selected_cat)
+                        if selected_cat in ["Первое", "Второе", "Напиток", "Салат", "Выпечка", "Прочее"] else 5,
+                        key=f"cat_select_{selected_id}",
+                        label_visibility="collapsed",
+                    )
+                    if new_cat != selected_cat:
+                        update_dish_category(selected_id, new_cat)
+                        st.rerun()
+                with col_rename:
+                    new_name = st.text_input(
+                        "Переименовать",
+                        value=selected_name,
+                        key=f"rename_{selected_id}",
+                        label_visibility="collapsed",
+                    )
+                    if new_name != selected_name and new_name.strip():
+                        if st.button("✏️ Переименовать", key=f"rename_btn_{selected_id}", use_container_width=True):
+                            ok = rename_dish(selected_id, new_name.strip())
+                            if ok:
+                                st.rerun()
+                            else:
+                                st.error("Такое имя уже есть")
+                with col_delete:
+                    st.write("")  # отступ
+                    if st.button("🗑 Удалить", key=f"del_dish_{selected_id}", use_container_width=True):
+                        delete_dish(selected_id)
+                        st.session_state.selected_dish_id = None
+                        st.rerun()
+
+                st.markdown("**Ингредиенты на 1 порцию:**")
+
+                ingredients_df = get_dish_ingredients(selected_id)
+
+                if len(ingredients_df) == 0:
+                    st.info("Состав пуст. Добавь ингредиенты ниже.")
+                else:
+                    for _, ing in ingredients_df.iterrows():
+                        col1, col2, col3 = st.columns([4, 1, 1])
+                        with col1:
+                            st.write(f"**{ing['product_name']}**")
+                        with col2:
+                            st.write(f"{ing['grams_per_portion']:g} г")
+                        with col3:
+                            if st.button("🗑 Удалить", key=f"del_ing_{selected_id}_{ing['product_id']}", use_container_width=True):
+                                delete_dish_ingredient(selected_id, int(ing["product_id"]))
+                                st.rerun()
+
+                st.markdown("---")
+                st.markdown("**Добавить ингредиент**")
+
+                products_df = get_products_df()
+                if len(products_df) == 0:
+                    st.warning("Сначала добавь продукты на вкладке «Продукты».")
+                else:
+                    product_options = {
+                        f"{row['name']} ({row['unit']})": int(row["id"])
+                        for _, row in products_df.iterrows()
+                    }
+                    col_p, col_g, col_b = st.columns([3, 1, 1])
+                    with col_p:
+                        chosen_label = st.selectbox(
+                            "Продукт",
+                            options=list(product_options.keys()),
+                            key=f"new_ing_product_{selected_id}",
+                            label_visibility="collapsed",
+                        )
+                    with col_g:
+                        grams = st.number_input(
+                            "Грамм",
+                            min_value=0.1,
+                            value=10.0,
+                            step=1.0,
+                            key=f"new_ing_grams_{selected_id}",
+                            label_visibility="collapsed",
+                        )
+                    with col_b:
+                        if st.button("➕ Добавить", key=f"add_ing_{selected_id}", use_container_width=True):
+                            add_dish_ingredient(
+                                selected_id,
+                                product_options[chosen_label],
+                                float(grams),
+                            )
+                            st.rerun()
 
 with tab_menu:
     st.info("Здесь будет составление меню на день.")
 
 with tab_calc:
     st.info("Здесь будет автоматический расчёт заявки.")
+
+# Подключаем стили
+with open("styles.css", "r", encoding="utf-8") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)

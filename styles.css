@@ -1,0 +1,30 @@
+/* ============================================
+   Меню-раскладка — стили приложения
+   ============================================ */
+
+/* Красные кнопки удаления */
+div[data-testid="stButton"] button[kind="secondary"]:has(div:contains("🗑 Удалить")) {
+    color: #B91C1C;
+    border-color: #B91C1C;
+}
+
+div[data-testid="stButton"] button[kind="secondary"]:has(div:contains("🗑 Удалить")):hover {
+    background-color: #FEE2E2;
+    border-color: #B91C1C;
+    color: #7F1D1D;
+}
+
+/* Аккуратные кнопки и подписи */
+div[data-testid="stButton"] button p {
+    font-size: 14px;
+}
+
+/* Заголовки блюд */
+h3 {
+    color: #7C2D12;
+}
+
+/* Разделители — мягче */
+hr {
+    border-color: #E7D8C5;
+}
